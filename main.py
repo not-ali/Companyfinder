@@ -1,14 +1,31 @@
 import os
 import re
 import requests
-from dotenv import load_dotenv
 from rich import print
 from openai import OpenAI
 import streamlit as st
 
-# Load environment variables
-load_dotenv()
-api_key = os.getenv("EXA_API_KEY")
+# --------------------------
+# API Key Handling
+# --------------------------
+
+api_key = None
+
+# Try Streamlit secrets first (Cloud)
+try:
+    api_key = st.secrets["EXA_API_KEY"]
+except Exception:
+    # Fallback to .env (Local)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        api_key = os.getenv("EXA_API_KEY")
+    except ImportError:
+        st.error("⚠️ python-dotenv not installed, and no Streamlit secret found.")
+
+if not api_key:
+    st.error("❌ No API key found. Please set EXA_API_KEY in .env (local) or in Streamlit secrets (Cloud).")
+    st.stop()
 
 # Initialize client
 client = OpenAI(
@@ -36,6 +53,7 @@ def sanitize_response(text: str) -> str:
         cleaned.append(line)
     return "\n".join(cleaned)
 
+
 def extract_unique_urls(text, allow_domains=None):
     seen = set()
     ordered = []
@@ -61,6 +79,7 @@ def extract_unique_urls(text, allow_domains=None):
         allow_domains = [d.lower() for d in allow_domains]
         return [u for u in ordered if any(d in u.lower() for d in allow_domains)]
     return ordered
+
 
 def get_github_members(org_url):
     try:
