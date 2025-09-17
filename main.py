@@ -242,19 +242,19 @@ if st.button("Search"):
                     st.write(l)
 
         if chosen_githubs:
-                  st.subheader(f"🐙 GitHub Links & Members (source: {source})")
+           st.subheader(f"🐙 GitHub Links & Members (source: {source})")
     for link in chosen_githubs:
-        st.markdown(f"### 🔗 [{link}]({link})")
+        st.markdown(f"**🔗 [GitHub Org]({link})**")  # smaller than ### heading
         members = get_github_members(link, token=GITHUB_TOKEN)
 
         if members:
-            st.write("### 👥 Public Members")
+            st.markdown("#### 👥 Public Members")  # smaller header
             for m in members:
                 col1, col2 = st.columns([1, 4])
                 with col1:
                     st.markdown(
                         f'<img src="https://github.com/{m["login"]}.png" '
-                        f'width="80" style="border-radius:50%;">',
+                        f'width="70" style="border-radius:50%;">',
                         unsafe_allow_html=True
                     )
                 with col2:
