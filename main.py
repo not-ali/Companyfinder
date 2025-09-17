@@ -242,19 +242,18 @@ if st.button("Search"):
                     st.write(l)
 
             if chosen_githubs:
-                st.subheader(f"🐙 GitHub Links & Members (source: {source})")
-                for link in chosen_githubs:
-                    st.write(f"**{link}**")
-                    members = get_github_members(link, token=GITHUB_TOKEN)
-                    if members:
-                        st.write("Members (public via GitHub API):")
-                        for m in members:
-                            twitter = f"[Twitter]({m['twitter']})" if m["twitter"] else "—"
-                            st.markdown(
-                                f"- **{m['login']}** ({m['name'] or 'N/A'}) — [Profile]({m['url']}) | {twitter} | {m['email'] or 'N/A'}",
-                                unsafe_allow_html=True
-                            )
-                    else:
-                        st.info("⚠️ No public members found via GitHub API for this org. (GitHub only exposes public members.)")
-            else:
-                st.info("No GitHub org found for this project (website + LLM checks).")
+              st.subheader(f"🐙 GitHub Links & Members (source: {source})")
+    for link in chosen_githubs:
+        st.write(f"**{link}**")
+        members = get_github_members(link, token=GITHUB_TOKEN)
+        if members:
+            st.write("Members (public via GitHub API):")
+            for m in members:
+                twitter = f"[Twitter]({m['twitter']})" if m["twitter"] else "—"
+                st.markdown(
+                    f"- **{m['login']}** ({m['name'] or 'N/A'}) — "
+                    f"[Profile]({m['url']}) | {twitter} | {m['email'] or 'N/A'}",
+                    unsafe_allow_html=True
+                )
+        else:
+            st.info("⚠️ No public members found via GitHub API for this org. (GitHub only exposes public members.)")
