@@ -1,21 +1,17 @@
 import os
 import re
 import requests
-from rich import print
+import pandas as pd
 from openai import OpenAI
 import streamlit as st
 
 # --------------------------
 # API Key Handling
 # --------------------------
-
 api_key = None
-
-# Try Streamlit secrets first (Cloud)
 try:
     api_key = st.secrets["EXA_API_KEY"]
 except Exception:
-    # Fallback to .env (Local)
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -24,119 +20,114 @@ except Exception:
         st.error("⚠️ python-dotenv not installed, and no Streamlit secret found.")
 
 if not api_key:
-    st.error("❌ No API key found. Please set EXA_API_KEY in .env (local) or in Streamlit secrets (Cloud).")
+    st.error("❌ No API key found. Please set EXA_API_KEY in .env or Streamlit secrets.")
     st.stop()
 
-# Initialize client
-client = OpenAI(
-    base_url="https://api.exa.ai",
-    api_key=api_key,
-)
+# Initialize OpenAI/Exa client
+client = OpenAI(base_url="https://api.exa.ai", api_key=api_key)
+
+# Optional GitHub token
+GITHUB_TOKEN = None  # e.g., "ghp_XXXXXXXXXXXXXXXXXXXX"
 
 # --------------------------
-# Helper functions
+# Utility Functions
 # --------------------------
-
-def sanitize_response(text: str) -> str:
-    """
-    Remove lines we don't want to display (e.g., GitHub security/support emails).
-    """
-    block_patterns = [
-        r"Email:\s*For security vulnerabilities.*",
-        r"Support:\s*Visit their support site.*",
-    ]
-    lines = text.splitlines()
-    cleaned = []
-    for line in lines:
-        if any(re.search(pat, line, flags=re.IGNORECASE) for pat in block_patterns):
-            continue
-        cleaned.append(line)
-    return "\n".join(cleaned)
-
-
-def extract_unique_urls(text, allow_domains=None):
+def extract_links(text, domains=None):
     seen = set()
     ordered = []
 
     def add(url):
-        url = url.strip()
-        if url.startswith("<") and url.endswith(">"):
-            url = url[1:-1]
-        url = url.rstrip(").,]>'\"")
+        url = url.strip().rstrip(").,]>'\"")
         if url and url not in seen:
             seen.add(url)
             ordered.append(url)
 
-    # markdown links
     for match in re.finditer(r'\[([^\]]*?)\]\((https?://[^\s)]+)\)', text):
         add(match.group(2))
-
-    # bare urls
     for match in re.finditer(r'https?://[^\s\)\]\}\,\'"]+', text):
         add(match.group(0))
 
-    if allow_domains:
-        allow_domains = [d.lower() for d in allow_domains]
-        return [u for u in ordered if any(d in u.lower() for d in allow_domains)]
+    if domains:
+        domains = [d.lower() for d in domains]
+        return [u for u in ordered if any(d in u.lower() for d in domains)]
     return ordered
 
+def query_exa(prompt):
+    completion = client.chat.completions.create(
+        model="exa",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return completion.choices[0].message.content.strip()
 
-def get_github_members(org_url):
+def get_org_name_from_github_url(url):
+    parts = url.rstrip("/").split("/")
+    if "github.com" in parts:
+        idx = parts.index("github.com")
+        return parts[idx + 1]  # org name
+    return None
+
+def get_github_members(github_url, token=None):
+    org_name = get_org_name_from_github_url(github_url)
+    if not org_name:
+        st.warning(f"❌ Could not extract org name from URL: {github_url}")
+        return []
+
+    api_url = f"https://api.github.com/orgs/{org_name}/members"
+    headers = {"Authorization": f"token {token}"} if token else {}
+
     try:
-        org_name = org_url.rstrip("/").split("/")[-1]
-        api_url = f"https://api.github.com/orgs/{org_name}/members"
-        response = requests.get(api_url)
-
+        response = requests.get(api_url, headers=headers)
         if response.status_code != 200:
+            st.warning(f"GitHub API returned {response.status_code} for {org_name}")
             return []
 
         members = []
         for m in response.json():
             login = m["login"]
-            user_res = requests.get(f"https://api.github.com/users/{login}")
+            user_res = requests.get(f"https://api.github.com/users/{login}", headers=headers)
             if user_res.status_code == 200:
-                user_data = user_res.json()
+                data = user_res.json()
                 members.append({
                     "login": login,
-                    "url": user_data.get("html_url"),
-                    "name": user_data.get("name"),
-                    "email": user_data.get("email"),
-                    "twitter": user_data.get("twitter_username"),
+                    "name": data.get("name"),
+                    "url": data.get("html_url"),
+                    "twitter": data.get("twitter_username"),
+                    "email": data.get("email")
                 })
         return members
-    except Exception:
+    except Exception as e:
+        st.error(f"⚠️ Error fetching members: {e}")
         return []
 
 # --------------------------
 # Streamlit UI
 # --------------------------
-
 st.title("🔍 Company Info Finder")
 
-company_name = st.text_input("Enter company name or website:", "")
+company_name = st.text_input("Enter company name or website:")
 
 if st.button("Search"):
     if not company_name.strip():
         st.warning("Please enter a company name or website.")
     else:
-        query = f"""
-        Find me any contact details that you can find regarding the following company: {company_name} 
-        including but not limited to email, social media, phone numbers, youtube, linkedin, github everything.
-        """
-
         with st.spinner("Searching..."):
-            completion = client.chat.completions.create(
-                model="exa",
-                messages=[{"role": "user", "content": query}]
-            )
-            response_text = completion.choices[0].message.content
-            response_text = sanitize_response(response_text)  # clean unwanted lines
+            queries = {
+                "Website": f"Find the official main website for {company_name}. Return only the link.",
+                "General Contacts": f"Find official contact details for {company_name}. Include: emails, phone numbers, contact pages.",
+                "Twitter": f"Find the official Twitter account for {company_name}. Return only the link(s).",
+                "LinkedIn": f"Find the official LinkedIn page for {company_name}. Return only the link(s).",
+                "GitHub": f"Find the official GitHub organization or repositories for {company_name}. Return only the link(s)."
+            }
 
-            st.subheader("📄 Links Found")
-            st.write(response_text)
+            report_sections = {sec: query_exa(q) for sec, q in queries.items()}
 
-            linkedin_links = extract_unique_urls(response_text, allow_domains=["linkedin.com"])
-            github_links = extract_unique_urls(response_text, allow_domains=["github.com"])
+            # Extract GitHub and LinkedIn links
+            linkedin_links = extract_links(report_sections.get("LinkedIn", ""), ["linkedin.com"])
+            github_links = extract_links(report_sections.get("GitHub", ""), ["github.com"])
+
+            st.subheader("📄 All Links Found")
+            for sec in ["Website", "General Contacts", "Twitter", "LinkedIn", "GitHub"]:
+                st.write(f"**{sec}:**\n{report_sections.get(sec, 'N/A')}")
 
             if linkedin_links:
                 st.subheader("🔗 LinkedIn Links")
@@ -146,9 +137,11 @@ if st.button("Search"):
             if github_links:
                 st.subheader("🐙 GitHub Links & Members")
                 for link in github_links:
-                    st.write(link)
-                    members = get_github_members(link)
+                    st.write(f"**{link}**")
+                    members = get_github_members(link, token=GITHUB_TOKEN)
                     if members:
-                        st.json(members)
+                        df = pd.DataFrame(members)
+                        df = df[['login', 'name', 'url', 'twitter', 'email']]
+                        st.dataframe(df)
                     else:
-                        st.write("No members found or access restricted.")
+                        st.info("No public members found or access restricted.")
