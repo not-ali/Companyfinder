@@ -31,11 +31,11 @@ try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 except Exception:
     pass
+
 # --------------------------
 # Utility Functions
 # --------------------------
 def extract_links(text, domains=None):
-    """Extract unique URLs from text (markdown links and bare URLs)."""
     seen = set()
     ordered = []
 
@@ -63,12 +63,10 @@ def query_exa(prompt):
     return completion.choices[0].message.content.strip()
 
 def get_org_from_github_url(url):
-    """Return first path segment after github.com (org name) or None."""
     m = re.search(r'github\.com/([A-Za-z0-9_.-]+)', url, flags=re.I)
     return m.group(1) if m else None
 
 def github_org_exists(org, token=None):
-    """Return True if https://api.github.com/orgs/{org} exists (200)."""
     try:
         headers = {"Authorization": f"token {token}"} if token else {}
         r = requests.get(f"https://api.github.com/orgs/{org}", headers=headers, timeout=8)
@@ -77,7 +75,6 @@ def github_org_exists(org, token=None):
         return False
 
 def get_github_members(github_url, token=None):
-    """Get public members via GitHub API (list of dicts)."""
     org = get_org_from_github_url(github_url)
     if not org:
         return []
@@ -85,6 +82,7 @@ def get_github_members(github_url, token=None):
     try:
         r = requests.get(f"https://api.github.com/orgs/{org}/members", headers=headers, timeout=10)
         if r.status_code != 200:
+            st.warning(f"GitHub API error {r.status_code}: {r.text}")
             return []
         members = []
         for item in r.json():
@@ -100,21 +98,16 @@ def get_github_members(github_url, token=None):
                     "login": login,
                     "name": ud.get("name"),
                     "url": ud.get("html_url"),
-                    "twitter": twitter_url,   # <-- clickable link
+                    "twitter": twitter_url,
                     "email": ud.get("email")
                 })
         return members
-    except Exception:
+    except Exception as e:
+        st.error(f"⚠️ GitHub members fetch failed: {e}")
         return []
 
-
 def extract_githubs_from_site(site_url):
-    """
-    Fetch site_url HTML and return dict of {org:count} for github orgs found.
-    Uses regex only (no new libs). Returns normalized org-level URLs.
-    """
     try:
-        # normalize site_url
         if site_url.startswith("//"):
             site_url = "https:" + site_url
         if not site_url.startswith("http"):
@@ -124,7 +117,6 @@ def extract_githubs_from_site(site_url):
         if r.status_code != 200:
             return {}
         html = r.text.lower()
-        # find github.com/org or github.com/org/repo patterns
         matches = re.findall(r'github\.com/([a-z0-9_.-]+)(?:/[a-z0-9_.-]+)?', html, flags=re.I)
         counts = {}
         for org in matches:
@@ -137,10 +129,6 @@ def extract_githubs_from_site(site_url):
         return {}
 
 def choose_best_org_from_site(counts_dict, company_name):
-    """
-    Given a dict {org:count} and the company name, pick the best org.
-    Heuristics: occurrence count, token overlap with company_name.
-    """
     if not counts_dict:
         return None
     company = (company_name or "").lower()
@@ -148,11 +136,9 @@ def choose_best_org_from_site(counts_dict, company_name):
     best = None
     best_score = -1
     for org, count in counts_dict.items():
-        score = count  # base score is number of occurrences
-        # exact or substring match bonus
+        score = count
         if org in company or any(tok and tok in org for tok in tokens):
             score += 5
-        # longer org names that include multiple tokens get small bonus
         overlap = sum(1 for tok in tokens if tok and tok in org)
         score += overlap * 2
         if score > best_score:
@@ -174,7 +160,6 @@ if st.button("Search"):
         st.warning("Please enter a project name or website.")
     else:
         with st.spinner("Searching..."):
-            # targeted prompts
             queries = {
                 "Website": f"Find the official main website for the Web3/blockchain project {company_name}. Return only the link.",
                 "General Contacts": f"Find official contact details for {company_name} (Web3 project). Include emails and contact pages.",
@@ -183,7 +168,6 @@ if st.button("Search"):
                 "GitHub": f"Find the official GitHub organization or repositories for {company_name}. Return only the link(s)."
             }
 
-            # ask Exa for results
             report_sections = {}
             for sec, q in queries.items():
                 try:
@@ -192,7 +176,6 @@ if st.button("Search"):
                     report_sections[sec] = ""
                     st.error(f"LLM query failed for {sec}: {e}")
 
-            # extract website and LLM github suggestion
             website_links = extract_links(report_sections.get("Website", ""))
             website_url = website_links[0] if website_links else None
 
@@ -201,15 +184,13 @@ if st.button("Search"):
 
             chosen_githubs = []
 
-            # 1) If website present: scan it for github orgs and pick best
             if website_url:
-                site_counts = extract_githubs_from_site(website_url)  # dict org->count
+                site_counts = extract_githubs_from_site(website_url)
                 best_site_org_url = choose_best_org_from_site(site_counts, company_name)
                 if best_site_org_url and get_org_from_github_url(best_site_org_url) and github_org_exists(get_org_from_github_url(best_site_org_url), token=GITHUB_TOKEN):
                     chosen_githubs = [best_site_org_url]
                     source = "website"
                 else:
-                    # try to validate any site candidates (if any) that exist on GitHub
                     valid_site_orgs = []
                     for org in site_counts.keys():
                         if github_org_exists(org, token=GITHUB_TOKEN):
@@ -218,7 +199,6 @@ if st.button("Search"):
                         chosen_githubs = valid_site_orgs
                         source = "website"
 
-            # 2) If no chosen from site, verify LLM suggestions and keep valid ones
             if not chosen_githubs and llm_githubs:
                 valid_llm = []
                 for g in llm_githubs:
@@ -229,7 +209,6 @@ if st.button("Search"):
                     chosen_githubs = valid_llm
                     source = "llm"
 
-            # 3) Strict LLM query if still nothing
             if not chosen_githubs:
                 try:
                     strict = query_exa(f"Return ONLY the official GitHub organization URL for the Web3 project {company_name}, nothing else.")
@@ -243,18 +222,16 @@ if st.button("Search"):
                 except Exception:
                     pass
 
-            # 4) Last resort: use LLM-provided githubs unverified (rare), but try to normalize to org-level
             if not chosen_githubs and llm_githubs:
                 normalized = []
                 for g in llm_githubs:
                     org = get_org_from_github_url(g)
                     if org:
                         normalized.append(f"https://github.com/{org}")
-                chosen_githubs = list(dict.fromkeys(normalized))  # dedupe
+                chosen_githubs = list(dict.fromkeys(normalized))
                 if chosen_githubs:
                     source = "llm-unverified"
 
-             # Display aggregated results
             st.subheader("📄 All Links Found")
             for sec in ["Website", "General Contacts", "Twitter", "LinkedIn", "GitHub"]:
                 st.write(f"**{sec}:**\n{report_sections.get(sec, 'N/A')}")
@@ -265,17 +242,19 @@ if st.button("Search"):
                     st.write(l)
 
             if chosen_githubs:
-             st.subheader(f"🐙 GitHub Links & Members (source: {source})")
-    for link in chosen_githubs:
-        st.write(f"**{link}**")
-        members = get_github_members(link, token=GITHUB_TOKEN)
-        if members:
-            st.write("Members (public via GitHub API):")
-            for m in members:
-                twitter = f"[Twitter]({m['twitter']})" if m["twitter"] else "—"
-                st.markdown(
-                    f"- **{m['login']}** ({m['name'] or 'N/A'}) — [Profile]({m['url']}) | {twitter} | {m['email'] or 'N/A'}",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.info("⚠️ No public members found via GitHub API for this org. (GitHub only exposes public members.)")
+                st.subheader(f"🐙 GitHub Links & Members (source: {source})")
+                for link in chosen_githubs:
+                    st.write(f"**{link}**")
+                    members = get_github_members(link, token=GITHUB_TOKEN)
+                    if members:
+                        st.write("Members (public via GitHub API):")
+                        for m in members:
+                            twitter = f"[Twitter]({m['twitter']})" if m["twitter"] else "—"
+                            st.markdown(
+                                f"- **{m['login']}** ({m['name'] or 'N/A'}) — [Profile]({m['url']}) | {twitter} | {m['email'] or 'N/A'}",
+                                unsafe_allow_html=True
+                            )
+                    else:
+                        st.info("⚠️ No public members found via GitHub API for this org. (GitHub only exposes public members.)")
+            else:
+                st.info("No GitHub org found for this project (website + LLM checks).")
