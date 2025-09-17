@@ -162,7 +162,7 @@ def choose_best_org_from_site(counts_dict, company_name):
 # --------------------------
 # Streamlit UI
 # --------------------------
-st.title("🔍 Web3 Company Info Finder — improved GitHub selection")
+st.title("🔍 Web3 Company Info Finder")
 
 company_name = st.text_input("Enter Web3/Blockchain project name or website:")
 
