@@ -31,6 +31,7 @@ try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 except Exception:
     pass
+
 # --------------------------
 # Utility Functions
 # --------------------------
@@ -76,114 +77,144 @@ def github_org_exists(org, token=None):
     except Exception:
         return False
 
-def get_github_members(github_url, token=None):
-    """Get public members via GitHub API (list of dicts)."""
-    org = get_org_from_github_url(github_url)
-    if not org:
-        return []
-    headers = {"Authorization": f"token {token}"} if token else {}
+def scrape_people_page(org):
+    """
+    Optional: simple regex-based scrape of the /orgs/{org}/people page.
+    This is best-effort — GitHub HTML can change and scraping may not always work.
+    """
+    url = f"https://github.com/orgs/{org}/people"
     try:
-        r = requests.get(f"https://api.github.com/orgs/{org}/members", headers=headers, timeout=10)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; CompanyInfoBot/1.0)"}
+        r = requests.get(url, headers=headers, timeout=10)
         if r.status_code != 200:
             return []
-        members = []
-        for item in r.json():
-            login = item.get("login")
-            if not login:
-                continue
-            ures = requests.get(f"https://api.github.com/users/{login}", headers=headers, timeout=8)
-            if ures.status_code == 200:
-                ud = ures.json()
-                twitter = ud.get("twitter_username")
-                twitter_url = f"https://twitter.com/{twitter}" if twitter else None
-                members.append({
-                    "login": login,
-                    "name": ud.get("name"),
-                    "url": ud.get("html_url"),
-                    "twitter": twitter_url,   # <-- clickable link
-                    "email": ud.get("email")
-                })
-        return members
+        html = r.text
+
+        # Primary: look for elements marked as user hovercards (best signal)
+        found = set()
+        for m in re.finditer(r'data-hovercard-type="user"\s*href="/([^/"]+)"', html, flags=re.I):
+            user = m.group(1).strip()
+            if user and user.lower() != org.lower():
+                found.add(user)
+
+        # Fallback: generic href pattern, then filter common non-user paths
+        if not found:
+            candidates = re.findall(r'href="/([A-Za-z0-9-]+)"', html)
+            bad = {
+                org.lower(), "issues", "pulls", "releases", "security", "settings",
+                "features", "projects", "collections", "organizations", "marketplace",
+                "about", "contact", "blog", "docs", "help", "login", "search"
+            }
+            for c in candidates:
+                c2 = c.strip()
+                if c2 and c2.lower() not in bad and len(c2) > 1:
+                    found.add(c2)
+
+        people = [{"login": u, "url": f"https://github.com/{u}"} for u in sorted(found)]
+        return people
     except Exception:
         return []
 
+def get_github_members(github_url, token=None, allow_scrape=False, show_debug=False):
+    """
+    Get public members via GitHub API. If empty and allow_scrape True, try scraping /people.
+    Returns list of member dicts. Also (optionally) shows debug info in Streamlit.
+    """
+    org = get_org_from_github_url(github_url)
+    if not org:
+        if show_debug:
+            st.warning("Could not parse org from URL.")
+        return []
 
-def extract_githubs_from_site(site_url):
-    """
-    Fetch site_url HTML and return dict of {org:count} for github orgs found.
-    Uses regex only (no new libs). Returns normalized org-level URLs.
-    """
+    headers = {"Authorization": f"token {token}"} if token else {}
+    api_url = f"https://api.github.com/orgs/{org}/members"
     try:
-        # normalize site_url
-        if site_url.startswith("//"):
-            site_url = "https:" + site_url
-        if not site_url.startswith("http"):
-            site_url = "https://" + site_url.lstrip("/")
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; CompanyInfoBot/1.0)"}
-        r = requests.get(site_url, headers=headers, timeout=8)
-        if r.status_code != 200:
-            return {}
-        html = r.text.lower()
-        # find github.com/org or github.com/org/repo patterns
-        matches = re.findall(r'github\.com/([a-z0-9_.-]+)(?:/[a-z0-9_.-]+)?', html, flags=re.I)
-        counts = {}
-        for org in matches:
-            org = org.strip().lower()
-            if not org:
-                continue
-            counts[org] = counts.get(org, 0) + 1
-        return counts
-    except Exception:
-        return {}
+        resp = requests.get(api_url, headers=headers, timeout=10)
 
-def choose_best_org_from_site(counts_dict, company_name):
-    """
-    Given a dict {org:count} and the company name, pick the best org.
-    Heuristics: occurrence count, token overlap with company_name.
-    """
-    if not counts_dict:
-        return None
-    company = (company_name or "").lower()
-    tokens = re.findall(r'[a-z0-9]+', company)
-    best = None
-    best_score = -1
-    for org, count in counts_dict.items():
-        score = count  # base score is number of occurrences
-        # exact or substring match bonus
-        if org in company or any(tok and tok in org for tok in tokens):
-            score += 5
-        # longer org names that include multiple tokens get small bonus
-        overlap = sum(1 for tok in tokens if tok and tok in org)
-        score += overlap * 2
-        if score > best_score:
-            best_score = score
-            best = org
-    if best:
-        return f"https://github.com/{best}"
-    return None
+        # Debug info: show status so you can see why members are missing on deployment
+        if show_debug:
+            st.write(f"GitHub API GET {api_url} → {resp.status_code} {resp.reason}")
+
+        if resp.status_code == 200:
+            data = resp.json()
+            members = []
+            for item in data:
+                login = item.get("login")
+                if not login:
+                    continue
+                ures = requests.get(f"https://api.github.com/users/{login}", headers=headers, timeout=8)
+                if ures.status_code == 200:
+                    ud = ures.json()
+                    twitter = ud.get("twitter_username")
+                    twitter_url = f"https://twitter.com/{twitter}" if twitter else None
+                    members.append({
+                        "login": login,
+                        "name": ud.get("name"),
+                        "url": ud.get("html_url"),
+                        "twitter": twitter_url,
+                        "email": ud.get("email")
+                    })
+            if members:
+                return members
+            # empty list from API (no public members)
+            if show_debug:
+                st.info("GitHub API returned an empty list. This usually means the org has no public members or your token lacks permission to view private members.")
+        elif resp.status_code in (401, 403):
+            # 403 can be rate-limit or forbidden; 401 = bad credentials
+            if show_debug:
+                st.error(f"GitHub API returned {resp.status_code}. Possible bad token or rate limit. Response headers: {dict(resp.headers)}")
+        elif resp.status_code == 404:
+            if show_debug:
+                st.warning("GitHub org not found (404).")
+        else:
+            if show_debug:
+                st.warning(f"GitHub API returned {resp.status_code}: {resp.text[:400]}")
+
+        # If API gave nothing and scraping allowed, try people page
+        if allow_scrape:
+            if show_debug:
+                st.write("Attempting fallback scrape of the /people page...")
+            scraped = scrape_people_page(org)
+            if scraped:
+                # scraped is list of dicts with login/url
+                # Optionally we could try to fetch detailed info per user if token available—keep it simple
+                return scraped
+            else:
+                if show_debug:
+                    st.write("Scrape returned no users.")
+        return []
+    except Exception as e:
+        if show_debug:
+            st.error(f"Error while contacting GitHub API: {e}")
+        return []
 
 # --------------------------
 # Streamlit UI
 # --------------------------
-st.title("🔍 Web3 Company Info Finder")
+st.title("🔍Company Info Finder")
 
 company_name = st.text_input("Enter Web3/Blockchain project name or website:")
+
+# opt-in checkbox to allow fallback scraping of /people (only if API empty)
+allow_scrape = st.checkbox("If API shows no members, attempt to extract people from GitHub's /people page (uses regex)", value=False)
+
+# small toggle to show debug details about GitHub API responses
+show_debug = st.checkbox("Show GitHub API debug info (status codes & headers)", value=False)
 
 if st.button("Search"):
     if not company_name or not company_name.strip():
         st.warning("Please enter a project name or website.")
     else:
         with st.spinner("Searching..."):
-            # targeted prompts
+            # queries (same as before)
             queries = {
-                "Website": f"Find the official main website for the Web3/blockchain project {company_name}. Return only the link.",
-                "General Contacts": f"Find official contact details for {company_name} (Web3 project). Include emails and contact pages.",
-                "Twitter": f"Find the official Twitter (X) account for {company_name}. Return only the link(s).",
+                "Website": f"Find the official main website for {company_name}. Return only the link.",
+                "General Contacts": f"Find official contact details for {company_name}. Include emails and contact pages.",
+                "Twitter": f"Find the official Twitter account for {company_name}. Return only the link(s).",
                 "LinkedIn": f"Find the official LinkedIn page for {company_name}. Return only the link(s).",
                 "GitHub": f"Find the official GitHub organization or repositories for {company_name}. Return only the link(s)."
             }
 
-            # ask Exa for results
             report_sections = {}
             for sec, q in queries.items():
                 try:
@@ -192,90 +223,39 @@ if st.button("Search"):
                     report_sections[sec] = ""
                     st.error(f"LLM query failed for {sec}: {e}")
 
-            # extract website and LLM github suggestion
-            website_links = extract_links(report_sections.get("Website", ""))
-            website_url = website_links[0] if website_links else None
-
-            llm_githubs = extract_links(report_sections.get("GitHub", ""), ["github.com"])
+            # Extract GitHub and LinkedIn links
             linkedin_links = extract_links(report_sections.get("LinkedIn", ""), ["linkedin.com"])
+            github_links = extract_links(report_sections.get("GitHub", ""), ["github.com"])
 
-            chosen_githubs = []
-
-            # 1) If website present: scan it for github orgs and pick best
-            if website_url:
-                site_counts = extract_githubs_from_site(website_url)  # dict org->count
-                best_site_org_url = choose_best_org_from_site(site_counts, company_name)
-                if best_site_org_url and get_org_from_github_url(best_site_org_url) and github_org_exists(get_org_from_github_url(best_site_org_url), token=GITHUB_TOKEN):
-                    chosen_githubs = [best_site_org_url]
-                    source = "website"
-                else:
-                    # try to validate any site candidates (if any) that exist on GitHub
-                    valid_site_orgs = []
-                    for org in site_counts.keys():
-                        if github_org_exists(org, token=GITHUB_TOKEN):
-                            valid_site_orgs.append(f"https://github.com/{org}")
-                    if valid_site_orgs:
-                        chosen_githubs = valid_site_orgs
-                        source = "website"
-
-            # 2) If no chosen from site, verify LLM suggestions and keep valid ones
-            if not chosen_githubs and llm_githubs:
-                valid_llm = []
-                for g in llm_githubs:
-                    org = get_org_from_github_url(g)
-                    if org and github_org_exists(org, token=GITHUB_TOKEN):
-                        valid_llm.append(f"https://github.com/{org}")
-                if valid_llm:
-                    chosen_githubs = valid_llm
-                    source = "llm"
-
-            # 3) Strict LLM query if still nothing
-            if not chosen_githubs:
-                try:
-                    strict = query_exa(f"Return ONLY the official GitHub organization URL for the Web3 project {company_name}, nothing else.")
-                    strict_list = extract_links(strict, ["github.com"])
-                    for g in strict_list:
-                        org = get_org_from_github_url(g)
-                        if org and github_org_exists(org, token=GITHUB_TOKEN):
-                            chosen_githubs.append(f"https://github.com/{org}")
-                    if chosen_githubs:
-                        source = "strict-llm"
-                except Exception:
-                    pass
-
-            # 4) Last resort: use LLM-provided githubs unverified (rare), but try to normalize to org-level
-            if not chosen_githubs and llm_githubs:
-                normalized = []
-                for g in llm_githubs:
-                    org = get_org_from_github_url(g)
-                    if org:
-                        normalized.append(f"https://github.com/{org}")
-                chosen_githubs = list(dict.fromkeys(normalized))  # dedupe
-                if chosen_githubs:
-                    source = "llm-unverified"
-
-             # Display aggregated results
             st.subheader("📄 All Links Found")
             for sec in ["Website", "General Contacts", "Twitter", "LinkedIn", "GitHub"]:
                 st.write(f"**{sec}:**\n{report_sections.get(sec, 'N/A')}")
 
             if linkedin_links:
                 st.subheader("🔗 LinkedIn Links")
-                for l in linkedin_links:
-                    st.write(l)
+                for link in linkedin_links:
+                    st.write(link)
 
-            if chosen_githubs:
-             st.subheader(f"🐙 GitHub Links & Members (source: {source})")
-    for link in chosen_githubs:
-        st.write(f"**{link}**")
-        members = get_github_members(link, token=GITHUB_TOKEN)
-        if members:
-            st.write("Members (public via GitHub API):")
-            for m in members:
-                twitter = f"[Twitter]({m['twitter']})" if m["twitter"] else "—"
-                st.markdown(
-                    f"- **{m['login']}** ({m['name'] or 'N/A'}) — [Profile]({m['url']}) | {twitter} | {m['email'] or 'N/A'}",
-                    unsafe_allow_html=True
-                )
-        else:
-            st.info("⚠️ No public members found via GitHub API for this org. (GitHub only exposes public members.)")
+            if github_links:
+                st.subheader("🐙 GitHub Links & Members")
+                # show whether token is present (don't show token itself)
+                st.write("Using GitHub token:" , bool(GITHUB_TOKEN))
+                for link in github_links:
+                    st.write(f"**{link}**")
+                    members = get_github_members(link, token=GITHUB_TOKEN, allow_scrape=allow_scrape, show_debug=show_debug)
+                    if members:
+                        # Render members: clickable twitter + profile
+                        for m in members:
+                            parts = []
+                            parts.append(f"**[{m.get('login')}]({m.get('url')})**")
+                            parts.append(m.get("name") or "N/A")
+                            if m.get("twitter"):
+                                parts.append(f"[Twitter]({m.get('twitter')})")
+                            else:
+                                parts.append("Twitter: N/A")
+                            parts.append(f"Email: {m.get('email') or 'N/A'}")
+                            st.markdown(" — ".join(parts))
+                    else:
+                        st.info("No public members found via GitHub API for this org. (GitHub only exposes public members.)")
+            else:
+                st.info("No GitHub links found in LLM output.")
