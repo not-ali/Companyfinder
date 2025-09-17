@@ -26,8 +26,11 @@ if not api_key:
 client = OpenAI(base_url="https://api.exa.ai", api_key=api_key)
 
 # Optional GitHub token (improves rate limits)
-GITHUB_TOKEN = None  # set your token string here or leave None
-
+GITHUB_TOKEN = None
+try:
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+except Exception:
+    pass
 # --------------------------
 # Utility Functions
 # --------------------------
